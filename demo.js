@@ -1,18 +1,20 @@
 /* Rydora booking demo: live fare calculator + booking-to-payment flow.
    SAMPLE RATES below are placeholders until Rydora confirms its own. */
 (function(){
-const CONFIG={
-  baseFee:5.00,          // SAMPLE - per one-way ride
-  perMile:2.00,          // SAMPLE - per mile, per rider
-  minimum:16.00,         // from Rydora site: $16 total per one-way trip after discount
-  weekendPct:15,         // SAMPLE - Saturday/Sunday adjustment
-  stopFee:5.00,          // SAMPLE - per additional stop (plus the extra miles)
-  seatFee:35.00,         // from Rydora site
-  airportOne:110.00,     // from Rydora site
-  airportGroup:210.00,   // from Rydora site
-  groupDiscount:{1:0,2:0.05,3:0.10}, // from Rydora site
-  maxMiles:60,           // SAMPLE - longer trips go to a manual quote
-  minLeadHours:24        // from Rydora site
+const CONFIG={            // Rydora's settings (25 Nov). In the live system these are edited in the admin dashboard.
+  perMile:0.70,          // mileage cost
+  perHour:24.00,         // driver time
+  overhead:1.00,         // operating overhead per trip
+  marginPct:20,          // profit margin
+  minimum:16.00,         // minimum customer fare (total per one-way trip after discount)
+  waitPerMin:0.40,       // planned waiting at stops
+  seatFee:35.00,         // RYDORA-provided child seat, each
+  airportOne:110.00,     // BNA one-way, 1 rider
+  airportGroup:210.00,   // BNA one-way, 2-3 riders total
+  groupDiscount:{1:0,2:0.05,3:0.10}, // from the current site text
+  weekendPct:0,          // site mentions weekend pricing; set to 0 until Rydora decides
+  maxMiles:null,         // no automatic distance limit
+  minLeadHours:24        // from the current site text
 };
 const BNA={label:'Nashville International Airport (BNA), 1 Terminal Dr, Nashville, TN',lon:-86.6782,lat:36.1263};
 const CLARKSVILLE={lat:36.5298,lon:-87.3595};
@@ -65,15 +67,20 @@ async function calc(){
     for(const s of stopLines){const r=await geocode(s);if(r.length)stopPts.push(r[0]);}
     const rt=await route([a,...stopPts,b]);if(my!==seq)return;
     const n=Number(riders.value),seatN=Number(seats.value),lines=[];let oneWay;
-    if(rt.miles>CONFIG.maxMiles){panel.innerHTML='<p class="fp-warn">This route is '+rt.miles.toFixed(1)+' miles, outside the automatic booking area. Please call (844) 931-7433 for a quote.</p>';quote=null;return}
-    if(isAirport){oneWay=n===1?CONFIG.airportOne:CONFIG.airportGroup;lines.push([n===1?'Airport fare, 1 rider':'Airport group fare, '+n+' riders',oneWay]);}
+    if(CONFIG.maxMiles&&rt.miles>CONFIG.maxMiles){panel.innerHTML='<p class="fp-warn">This route is '+rt.miles.toFixed(1)+' miles, outside the automatic booking area. Please call (855) 447-4337 for a quote.</p>';quote=null;return}
+    const waitMin=Number(($('#waitmin')||{value:0}).value)||0;
+    if(isAirport){oneWay=n===1?CONFIG.airportOne:CONFIG.airportGroup;lines.push([n===1?'BNA airport fare, 1 rider, one way':'BNA airport group fare, '+n+' riders, one way (total)',oneWay]);
+      if(waitMin){const w=waitMin*CONFIG.waitPerMin;lines.push(['Planned waiting '+waitMin+' min × '+money(CONFIG.waitPerMin),w]);oneWay+=w;}}
     else{
-      const perRider=CONFIG.baseFee+CONFIG.perMile*rt.miles+CONFIG.stopFee*stopPts.length;
-      lines.push(['Base fare',CONFIG.baseFee]);lines.push([rt.miles.toFixed(1)+' miles × '+money(CONFIG.perMile),CONFIG.perMile*rt.miles]);
-      if(stopPts.length)lines.push([stopPts.length+' additional stop'+(stopPts.length>1?'s':''),CONFIG.stopFee*stopPts.length]);
+      const mileC=CONFIG.perMile*rt.miles,timeC=CONFIG.perHour*rt.minutes/60,cost=mileC+timeC+CONFIG.overhead,margin=cost*CONFIG.marginPct/100;
+      lines.push(['Mileage '+rt.miles.toFixed(1)+' mi × '+money(CONFIG.perMile),mileC]);
+      lines.push(['Driver time '+Math.round(rt.minutes)+' min × '+money(CONFIG.perHour)+'/hr',timeC]);
+      lines.push(['Operating overhead',CONFIG.overhead]);lines.push(['Margin ('+CONFIG.marginPct+'%)',margin]);
+      let perRider=cost+margin;
+      if(waitMin){const w=waitMin*CONFIG.waitPerMin;lines.push(['Planned waiting at stops '+waitMin+' min × '+money(CONFIG.waitPerMin),w]);perRider+=w;}
       let group=perRider*n;if(n>1){lines.push(['× '+n+' riders',perRider*(n-1)]);const disc=group*CONFIG.groupDiscount[n];lines.push(['Group discount ('+Math.round(CONFIG.groupDiscount[n]*100)+'% each)',-disc]);group-=disc;}
-      oneWay=group;if(oneWay<CONFIG.minimum){lines.push(['Minimum fare adjustment',CONFIG.minimum-oneWay]);oneWay=CONFIG.minimum;}
-      if(isWeekend(when.value)){const w=oneWay*CONFIG.weekendPct/100;lines.push(['Weekend adjustment ('+CONFIG.weekendPct+'%)',w]);oneWay+=w;}
+      oneWay=group;if(oneWay<CONFIG.minimum){lines.push(['Minimum fare adjustment (to $'+CONFIG.minimum.toFixed(2)+')',CONFIG.minimum-oneWay]);oneWay=CONFIG.minimum;}
+      if(CONFIG.weekendPct&&isWeekend(when.value)){const w=oneWay*CONFIG.weekendPct/100;lines.push(['Weekend adjustment ('+CONFIG.weekendPct+'%)',w]);oneWay+=w;}
     }
     let legs=1,label='One-way fare';if(pkg.value==='Round trip'){legs=2;label='Round trip (2 legs)';lines.push(['Return leg',oneWay]);}
     let total=oneWay*legs;if(seatN){lines.push([seatN+' RYDORA car seat'+(seatN>1?'s':'')+' × '+money(CONFIG.seatFee),CONFIG.seatFee*seatN]);total+=CONFIG.seatFee*seatN;}
@@ -85,7 +92,7 @@ async function calc(){
   }catch(e){if(my===seq){panel.innerHTML='<p class="fp-warn">The fare could not be calculated right now. Please try again.</p>';quote=null}}
 }
 let ct;[pickup,dest,stops].forEach(el=>el.addEventListener('change',()=>{clearTimeout(ct);ct=setTimeout(calc,250)}));
-[pkg,riders,seats,when].forEach(el=>el.addEventListener('change',calc));
+[pkg,riders,seats,when,$('#waitmin')].forEach(el=>el.addEventListener('change',calc));
 
 /* ---- submit -> review -> pay ---- */
 const pm=$('#paymodal');
